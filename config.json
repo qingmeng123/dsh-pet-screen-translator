@@ -31,5 +31,6 @@
     "x1": 1,
     "y1": 1
   },
-  "ocrWorker": true
+  "ocrWorker": true,
+  "idleExtendMs": 10000
 }

@@ -1,4 +1,4 @@
-package engine
+﻿package engine
 
 import (
 	"context"
@@ -43,6 +43,10 @@ type Engine struct {
 	lastOcrNorm string
 	// 刚翻过一模一样的译文时，短时间内不再重复翻同一屏（OCR 抖动会让文本比对失效）
 	suppressUntil time.Time
+
+	// 气泡保鲜：记下最后一次说话的内容与时刻，长时间没有新内容时把气泡续期
+	lastSpoken  string
+	lastSpokeAt time.Time
 
 	// 只为日志去重
 	unstable   bool
@@ -177,7 +181,7 @@ func (e *Engine) Step(ctx context.Context) (time.Duration, error) {
 
 	// 这一帧已经翻过了（画面没再明显变化）→ 什么都不做
 	if len(e.lastTranslatedSig) > 0 && sameScreen(sig, e.lastTranslatedSig) {
-		e.setState(StateIdle)
+		e.idle(ctx)
 		return interval, nil
 	}
 
@@ -294,6 +298,7 @@ func (e *Engine) translateAndSay(ctx context.Context, shot Shot, text string) (s
 	if err := e.SpeakSpoken(ctx, e.Cfg.Prefix+truncate(zh, 300)); err != nil {
 		return zh, usage, false, fmt.Errorf("写气泡失败: %w", err)
 	}
+	e.lastSpoken, e.lastSpokeAt = zh, e.now()
 	e.noteTranslation(zh, prev)
 	return zh, usage, true, nil
 }
@@ -342,6 +347,7 @@ func (e *Engine) sayStream(ctx context.Context, st Streamer, jpeg []byte) (strin
 	if zh != "" {
 		// 终稿：气泡 + 语音一次写完。流式半截只走 push（Say），永远不出声。
 		// 与上一条几乎相同就只补气泡，不重复念，省一次 Breeze 合成。
+		e.lastSpoken, e.lastSpokeAt = zh, e.now()
 		if dup := e.noteTranslation(zh, prev); dup {
 			push(zh, true)
 			e.logf("译文与上一条几乎相同，%d 秒内不再翻这一屏", int(e.Cfg.SuppressSeconds))
@@ -349,7 +355,8 @@ func (e *Engine) sayStream(ctx context.Context, st Streamer, jpeg []byte) (strin
 			e.warnf("终稿写气泡/播报失败：%v", err)
 			push(zh, true) // 播报失败也要把终稿补进气泡
 		}
-		e.lastTranslated = zh
+		e.lastSpoken, e.lastSpokeAt = zh, e.now()
+	e.lastTranslated = zh
 	}
 	return zh, usage, nil
 }
@@ -435,4 +442,48 @@ func (e *Engine) effectiveRegion() config.Region {
 		}
 	}
 	return e.Cfg.FingerprintRegion
+}
+
+// idle 收口「这一拍没有新内容」：状态归位，并给气泡续期。
+func (e *Engine) idle(ctx context.Context) {
+	e.keepAlive(ctx)
+	e.setState(StateIdle)
+}
+
+// keepAlive 在长时间没有新译文时，把当前气泡续期 IdleExtendMs。
+//
+// 场景：一句长台词读很久，气泡默认 12s 就消失了。这里在快到期时用同样的内容
+// 再播一次，时长变成 duration + idleExtendMs（默认 +10s），于是它一直在。
+func (e *Engine) keepAlive(ctx context.Context) {
+	if e.Cfg.IdleExtendMs <= 0 || e.lastSpoken == "" {
+		return
+	}
+	alive := time.Duration(e.Cfg.DurationMs) * time.Millisecond
+	if e.now().Sub(e.lastSpokeAt) < alive-1500*time.Millisecond {
+		return
+	}
+	extended := alive + time.Duration(e.Cfg.IdleExtendMs)*time.Millisecond
+	text := e.Cfg.Prefix + truncate(e.lastSpoken, 300)
+	if err := e.Acquire(ctx); err != nil {
+		e.warnf("气泡续期取锁失败：%v", err)
+		return
+	}
+	var err error
+	if tp, ok := e.Pet.(TimedSpeaker); ok {
+		err = tp.SayFor(ctx, e.lockID, text, extended, false)
+	} else {
+		err = e.Pet.Say(ctx, e.lockID, text)
+	}
+	e.release()
+	if err != nil {
+		e.warnf("气泡续期失败：%v", err)
+		return
+	}
+	e.lastSpokeAt = e.now()
+	e.logf("没有新内容，气泡再续 %d 秒", int(extended.Seconds()))
+}
+
+// TimedSpeaker 是可选能力：允许指定这条气泡显示多久。
+type TimedSpeaker interface {
+	SayFor(ctx context.Context, lockID, text string, dur time.Duration, spoken bool) error
 }

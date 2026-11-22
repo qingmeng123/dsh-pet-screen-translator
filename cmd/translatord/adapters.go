@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"context"
@@ -70,6 +70,17 @@ func (p petAdapter) SaySpoken(ctx context.Context, lockID, text string) error {
 		return p.Say(ctx, lockID, text)
 	}
 	return p.c.Broadcast(ctx, p.petID, lockID, text, p.duration, true, p.surface)
+}
+
+// SayFor 让 petAdapter 满足 engine.TimedSpeaker：指定这条气泡显示多久。
+func (p petAdapter) SayFor(ctx context.Context, lockID, text string, dur time.Duration, spoken bool) error {
+	if dur <= 0 {
+		dur = p.duration
+	}
+	if !spoken || !p.speak {
+		return p.c.Broadcast(ctx, p.petID, lockID, text, dur, false, "any")
+	}
+	return p.c.Broadcast(ctx, p.petID, lockID, text, dur, true, p.surface)
 }
 
 func (p petAdapter) Release(ctx context.Context, lockID string) error {

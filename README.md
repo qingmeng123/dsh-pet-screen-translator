@@ -279,3 +279,9 @@ dsh plugin --profile desktop remove dsh-pet-screen-translator
 | **常驻 `ocr-server.ps1`** | **23～74 ms** |
 
 配置开关：`"ocrWorker": true`（默认）；置 false 退回一次性调用。
+
+### 气泡续期（没有新内容时 +10s）
+
+默认气泡显示 12 秒（`duration`）。如果 12 秒内没有新的译文出现，守护进程会把**同一条气泡再播一次**，
+时长变成 `duration + idleExtendMs`（默认 12s + 10s = **22s**），于是你在读长台词时气泡不会自己消失。
+配置：`"idleExtendMs": 10000`（设 0 关闭）。

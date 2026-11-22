@@ -1,4 +1,4 @@
-package engine
+﻿package engine
 
 import (
 	"context"
@@ -552,5 +552,44 @@ func TestRegionLearnerPicksTextBand(t *testing.T) {
 	}
 	if _, has := l.current(); !has {
 		t.Fatal("学完后 current 应返回区域")
+	}
+}
+
+// fakeTimedPet 记录「带时长的说话」，用于验证气泡续期。
+type fakeTimedPet struct {
+	fakePet
+	durs []time.Duration
+}
+
+func (f *fakeTimedPet) SayFor(_ context.Context, _, text string, dur time.Duration, _ bool) error {
+	f.durs = append(f.durs, dur)
+	f.says = append(f.says, text)
+	return nil
+}
+
+// 没有新内容时，气泡到期前会被续期（duration + idleExtendMs）。
+func TestBubbleKeepAliveExtends(t *testing.T) {
+	clk := &clock{t: time.Unix(1_700_000_000, 0)}
+	text := "PLEASE GIVE IT A GIFT. KINDNESS MIND AMBITION"
+	cap := &fakeCapturer{shots: []Shot{
+		shot(1), shot(1), shot(1), shot(1), shot(1), shot(1),
+	}}
+	ocr := &fakeOCR{byFirstByte: map[byte]string{1: text}}
+	tr := &fakeTranslator{visionText: "请送给它一份礼物。"}
+	pet := &fakeTimedPet{}
+	e := newEngine(cap, ocr, tr, pet, clk)
+	e.Cfg.DurationMs = 12000
+	e.Cfg.IdleExtendMs = 10000
+
+	// 第 2 拍翻译完成；之后 4 拍都是"同一屏"，应触发续期
+	for i := 0; i < 6; i++ {
+		_, _ = e.Step(context.Background())
+		clk.advance(4 * time.Second)
+	}
+	if len(pet.durs) == 0 {
+		t.Fatal("长时间没有新内容时应触发气泡续期")
+	}
+	if got := pet.durs[0]; got != 22*time.Second {
+		t.Fatalf("续期时长应为 12s+10s=22s，got %v", got)
 	}
 }
