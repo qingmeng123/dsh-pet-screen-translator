@@ -1,4 +1,4 @@
-# dsh-pet-screen-translator
+﻿# dsh-pet-screen-translator
 
 给 [dsh-pet](https://github.com/PC2005-cloud/dsh-pet) 加一套「画面英文 → 中文气泡」的能力：右键菜单里多一项 **更多 / 屏幕翻译**，点开即开、再点即关。
 
@@ -12,15 +12,109 @@
 
 开启期间会占用桌宠（`/lock`），其它插件的碎碎念、余额气泡会让路；关闭时自动释放。用户拖一下宠物也会立刻收回占用，这是 dsh-pet 的既定行为——此时本插件会检测到写气泡失败并自动关闭，不会空转。
 
+### 稳定判定（避免翻半句）
+
+游戏文案是**打字机式连续跳出**的，逐帧翻译会翻到半句（`PLEASE A GIFT. t I KINDNESS…`）。所以每一帧先过一道稳定判定：
+
+- 与上一帧的规范化文本**相似度 ≥ 0.8** 视为“同一段、还在变”，把下一拍缩短到 `settleMs`（默认 300 ms）再看一次——它是**周期**：本拍抓屏+OCR 花掉的时间会从等待里扣掉；
+- 只有**连续稳定满 `settleMs`**、且这段文案还没翻过，才真正触发；
+- 稳定判定只用**文本**，不用像素：光标闪烁、精灵动画会让像素每帧都变，拿哈希判稳会永远等不到。
+
+实测：一段 82 字符的对话在打字过程中不触发，打完约 2 s 后一次性翻出
+`你对你的造物有何感受？（它不会听见。）爱 希望 厌恶 恐惧`。
+
+同一段被 OCR 抖动读成两个版本时，两次译文开头 10 字相同就不重复弹泡（省气泡刷屏）。
+
 ### 判重规则
 
-OCR 每拍都会抖一两个字符（`THE` / `'THE` / `TRAT`），所以不是逐字比对：
+**文本模式**（`translateMode: "ocr"`）：OCR 每拍都会抖一两个字符（`THE` / `'THE` / `TRAT`），所以不逐字比对：
 
 - 先归一化：小写、去标点、压空白，并把常见 OCR 混淆拉回正常字母（`?`→`h`、`0`→`o`、`1`→`l`、`5`→`s`、`rn`→`m`）；
 - 再按词集合算 Jaccard 相似度；短文本（< 60 字符）阈值 **0.45**，长文本 **0.8**；
 - 与**最近 3 帧**任意一帧超阈值就跳过，不再调模型。
 
-同样的画面只会翻一次，日志里会留下 `跳过（与最近帧相似）：…`。
+**视觉模式**（`translateMode: "vision"`）改用两条更准的判据：
+
+- 规范化文本**完全相同** → 跳过（画面没变）；
+- 或整帧 JPEG 的 **sha256 相同** → 跳过（OCR 抖动但像素没变）；
+- 否则才发图。理由：只换一个词（`TORSO`→`LEGS`）时文本相似度高达 0.7，用阈值判重会漏掉真变化。
+
+### 两种引擎
+
+`config.json` 的 `engine` 决定用哪套实现：
+
+| `engine` | 实现 | 说明 |
+| --- | --- | --- |
+| `go`（推荐） | `bin/translatord.exe` 常驻进程 | 抓屏、判稳、翻译、气泡全在 Go；JS 外壳只负责起停 |
+| `js` | 内置 `index.js` | 早期实现，保留作回退；抓屏走 PowerShell |
+
+### Go 引擎
+
+```powershell
+# 构建（工具链在 .tools\go，不改 PATH）
+$env:GOROOT='D:\deepseek\projects\.tools\go'
+$env:GOCACHE='D:\deepseek\projects\.tools\gocache'
+& "$env:GOROOT\bin\go.exe" build -trimpath -ldflags "-s -w -X main.version=0.1.0" -o bin/translatord.exe ./cmd/translatord
+
+# 自测
+.\bin\translatord.exe version
+.\bin\translatord.exe capture --window-class YYGameMakerYY --out shots\t.jpg
+.\bin\translatord.exe ocr --image shots\t.jpg
+.\bin\translatord.exe run --dsh-port 55503 --workspace D:\deepseek\projects
+
+# 单测
+& "$env:GOROOT\bin\go.exe" test ./... -count=1
+```
+
+菜单点击由 JS 外壳转成进程起停：
+
+| 操作 | 行为 |
+| --- | --- |
+| 点一次「屏幕翻译」（开） | `spawn translatord.exe run`，守护进程接管抓屏/翻译/气泡 |
+| 再点一次（关） | 外壳 `POST /shutdown` → 守护进程**先释放占用锁**再退出（3 s 内没退出才硬杀） |
+| 卸载插件 | 同上，走优雅关闭，不会把宠物锁死后等 TTL |
+
+守护进程启动时会把控制端口打到 stdout（`CONTROL_PORT=…`），外壳据此做优雅关闭。
+不用信号的原因：Windows 下 `child.kill()` 是硬终止，Go 的 `os.Interrupt` 收不到，锁会挂到 TTL 过期。
+
+**菜单项自带状态**（点一次开、再点一次关，文字随状态变）：
+
+| 菜单文字 | 含义 |
+| --- | --- |
+| `屏幕翻译：已关闭` | 进程未运行 |
+| `屏幕翻译：启动中` | 已 spawn，等控制端口 |
+| `屏幕翻译：运行中` | 进程就绪，等画面变化 |
+| `屏幕翻译：识别中` | 文案正在变，等稳定 2 秒 |
+| `屏幕翻译：翻译中` | 正在调模型 |
+| `屏幕翻译：出错` | 抓屏/OCR/翻译失败 |
+| `屏幕翻译：已退出` | 进程异常退出 |
+
+状态来自守护进程的 `GET /status`（外壳每 1.5 s 拉一次），点菜单时按**前缀匹配**，所以文字变了也点得动。
+
+**静态画面优化**：每拍先算 JPEG 的 sha256，与上一帧相同就直接复用上次 OCR 文本，
+省掉一次 PowerShell 调用（约 300 ms）。菜单/对话停住不动时，一拍只剩抓屏的 30～45 ms。
+
+**实测**：抓屏 32～46 ms（PowerShell 版 ~490 ms）；OCR 通道 ~310 ms（含 PowerShell 启动，静态画面跳过）；二进制约 6.7 MB。
+
+**日志**：Go 自己的在 `logs\translatord.log`；外壳的在 `logs\dsh-pet-screen-translator-shell.log`。
+
+### 旧 JS 引擎（legacy）
+
+`ocr.ps1` + `index.js` 里的完整实现，`engine: "js"` 时生效。抓屏与 OCR 都在 PowerShell 里完成，
+每拍起一个 `powershell.exe`（~490 ms、89 MB 内存起落）。保留原因：Go 引擎出问题时能一键切回。
+
+### 两种翻译通道
+
+| `translateMode` | 输入 | 每帧 prompt tokens（1280×960） | 延迟 | 适用 |
+| --- | --- | --- | --- | --- |
+| `ocr`（默认） | OCR 文本 | ~136 | 0.8～1.4 s | 普通对话，省钱 |
+| `vision` | 窗口截图（JPEG） | ~836 | 1.4～2.6 s | 多选项菜单、像素字体、OCR 易错处 |
+
+视觉模式实测（DELTARUNE 礼物界面）：OCR 把 `MIND` 认成 `MINO`、`BRAVERY`/`VOICE` 漏行；视觉一次读全，
+译文「请送给它一份礼物。善良 理智 野心 勇气 声音」。
+
+视觉通道直连 `https://api.deepseek.com`，key 取 DSH 凭据（`DEEPSEEK_API_KEY`），**失败会自动回退 OCR 文本**，
+并在日志里记 `视觉翻译失败（…），回退 OCR 文本`。每帧 usage 写入日志：`视觉翻译 prompt=836 completion=221`。
 
 ### 抓屏与翻译解耦
 
@@ -96,15 +190,30 @@ dsh plugin --profile desktop add file:D:/deepseek/projects/dsh-pet-screen-transl
 | `minChars` | 12 | 少于这么多字符视为“没字”。 |
 | `maxChars` | 600 | 送进模型的字符上限，超出截断（多半是 OCR 噪声）。 |
 | `translateTimeoutMs` | 15000 | 单次翻译超时；超时放弃该帧并记 `warn`。 |
+| `translateMode` | `ocr` | `ocr` = 用 OCR 文本翻译；`vision` = 把窗口截图发模型翻译。 |
+| `visionMaxTokens` | 300 | 视觉通道输出上限，防止模型跑题把 completion 撑大。 |
 | `lang` | `en-GB` | OCR 语言；本机可用 `en-GB` 与 `zh-Hans-CN`。 |
-| `region` | `null` | `null` = 主屏全屏；给 `{x,y,width,height}` 只识别那块区域（推荐：只框游戏画面，避开宠物自己）。 |
+| `window` | `null` | 按窗口标题（子串、不区分大小写）抓该窗口**客户区**。标题会随游戏场景变化，建议只作兜底。 |
+| `windowClass` | `null` | 按窗口**类名**抓客户区（如 `YYGameMakerYY`）。类名比标题稳定，优先用它。 |
+| `region` | `null` | 显式矩形 `{x,y,width,height}`，优先级最高。 |
 | `prefix` | `译：` | 气泡里的译文前缀。 |
 | `system` | 见代码 | 翻译提示词。 |
+
+**抓取范围优先级**：`region` > `windowClass` > `window` > 整屏。找不到窗口时回退整屏，并在日志里留一条
+`窗口「X」没找到（window-not-found），已改用整屏`，同一原因只报一次，不刷屏。
+
+**前台闸门**：`CopyFromScreen` 复制的是「屏幕上那块矩形」，不是窗口自己的像素——目标窗口被别的窗口
+盖住时，抓到的是压在上面的内容。所以按窗口抓时，若该窗口不在前台，本拍直接跳过（日志
+`跳过：目标窗口不在前台`），避免把 DSH / 编辑器的界面当成游戏文本翻出去。
+
+> 配置文件请存成 **UTF-8 无 BOM**：PowerShell 的 `Set-Content -Encoding UTF8` 会写 BOM，
+> `JSON.parse` 遇到 BOM 会直接抛错、整份配置退回默认值（这个坑真实踩过）。代码里已做去 BOM 兜底。
 
 ## 已知限制
 
 - 只翻**英文**：字母占比低于 55% 的画面（中文界面、纯图标）会被跳过；
-- OCR 来自 Windows，像素风小字、花体、低对比度背景识别率会下降；把 `region` 框到对话/字幕区能明显改善；
+- OCR 来自 Windows，像素风小字、花体、低对比度背景识别率会下降；用 `windowClass` 或 `region` 缩小范围能明显改善；
+- `windowClass`/`window` 抓的是**屏幕矩形**：目标窗口不在前台时本拍跳过（见上文「前台闸门」）；
 - 全屏独占（exclusive fullscreen）游戏里桌宠气泡可能看不见，把游戏改成「窗口化 / 无边框窗口」即可；
 - 每轮翻译都走一次模型调用，`intervalMs` 别设太小，否则既费 token 又跟不上。
 
@@ -113,3 +222,34 @@ dsh plugin --profile desktop add file:D:/deepseek/projects/dsh-pet-screen-transl
 ```sh
 dsh plugin --profile desktop remove dsh-pet-screen-translator
 ```
+
+> **前台判定**：目标窗口不在前台时跳过本拍，避免抓到遮挡内容。但**桌宠自己的浮窗**（标题含 `dsh-pet`）
+> 不算遮挡 —— 它弹气泡时会抢前台，若当成遮挡会永久跳过（这个坑真踩过）。
+
+> **遮挡检测**：目标窗口被别的窗口盖住时，GDI 抓到的是上层窗口的像素，所以会跳过本拍，
+> 菜单显示「屏幕翻译：画面被遮挡」。选择方式是客户区 3×3 采样 + `WindowFromPoint`，
+> 命中率 < 30% 判为遮挡。被遮挡时无法翻译（`PrintWindow` 抓 GameMaker/DirectX 窗口只会得到黑图）。
+
+> **开关反馈**：点「开」→ 气泡说「屏幕翻译已开启，画面里的英文我会念成中文。」；点「关」→「屏幕翻译已关闭。」。
+> 开启即取占用锁（翻译期间桌宠静止），关闭时释放。
+
+### 延迟实测
+
+| 阶段 | 耗时 |
+| --- | --- |
+| 抓屏 + JPEG | 36 ms |
+| OCR（含 PowerShell 启动） | 309 ms（静态画面跳过） |
+| 视觉翻译（`reasoningEffort: "none"`） | **0.6～0.9 s** |
+| 判稳窗口 | 100 ms（`settleMs`，周期语义） |
+
+从文案打完到气泡出译文约 **1.3 秒**。若把 `reasoningEffort` 置空（服务端默认），
+实测波动极大（1.3～8.6 s，一次推理吃掉 2000 tokens），不建议。
+
+> **判稳用像素指纹，不用 OCR**：每帧缩成 64×48 灰度指纹，变化像素占比 < `pixelChangeRatio`（默认 0.5%）
+> 就算"画面稳定"，此时才做一次 OCR 判断是不是英文。判稳阶段每拍只花抓屏 36 ms + 指纹 <1 ms，
+> 不再每秒起 2～3 个 PowerShell。
+
+### 流式输出
+
+翻译请求走 SSE 流式（`stream: true`），气泡**按 120 ms 节流增量刷新**，首字约 0.47 s 出现，全文约 0.68 s 完成。
+流式失败会自动回退非流式；开关是配置里的 `stream`（默认 `true`）。

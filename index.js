@@ -1,4 +1,4 @@
-/**
+﻿/**
  * dsh-pet-screen-translator —— 给 dsh-pet 加一只“会翻译的眼睛”。
  *
  * 形态：一个独立的 DSH 宿主插件，和 dsh-pet 同进程运行，只通过 dsh-pet 的公开 HTTP 接口交互
@@ -14,7 +14,8 @@
  */
 
 import { spawn } from 'node:child_process';
-import { access, appendFile, mkdir, readFile, realpath, rename, stat } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { access, appendFile, mkdir, readFile, realpath, rename, stat, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -22,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 export const name = 'screen-translator';
 
 /** 需要注入的宿主服务：webServer 取端口，agentDefaultModel + llm 用来翻译。 */
-export const inject = ['webServer', 'agentDefaultModel', 'llm'];
+export const inject = ['webServer', 'agentDefaultModel', 'llm', 'credentials'];
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 
@@ -49,8 +50,12 @@ const DEFAULTS = {
   maxChars: 600,
   /** 单次翻译的超时（ms）：超了就放弃这一帧。翻译已与抓屏解耦，这里放宽一点以免误杀慢响应。 */
   translateTimeoutMs: 15000,
-  /** 截屏区域：{x,y,width,height}；null = 主屏全屏。 */
+  /** 截屏区域：{x,y,width,height}；null = 不按矩形抓。优先级最高。 */
   region: null,
+  /** 按窗口标题（不区分大小写、子串匹配）抓该窗口的客户区，排除标题栏与旁边窗口；null = 不用。 */
+  window: null,
+  /** 按窗口类名（不区分大小写、子串匹配）抓客户区。类名比标题稳定 —— 游戏切场景常改标题。 */
+  windowClass: null,
   /** OCR 语言标识。 */
   lang: 'en-GB',
   /** 送进模型的提示词。 */
@@ -58,6 +63,20 @@ const DEFAULTS = {
     '你是游戏画面的实时翻译。把用户给出的英文画面文字翻译成自然、简短的中文，只输出译文本身：' +
     '不要解释、不要加引号或括号注释、不要重复原文。遇到菜单项、按钮、提醒用语就按游戏里常见的中文说法翻。' +
     '原文里出现明显缺字或乱码（例如 T?E、TRAT）时按上下文补全成最可能的词再翻，不要照抄残缺字母。',
+  /** 翻译通道：ocr = 用 OCR 文本（便宜）；vision = 把窗口截图发模型（准，但贵 6～7 倍 token）。 */
+  translateMode: 'ocr',
+  /** 视觉通道的接口地址；只支持 DeepSeek 官方接口（同名模型）。 */
+  visionApiBase: 'https://api.deepseek.com',
+  /** 视觉通道单次输出上限：译文很短，限住它避免模型跑题把 completion 撑到上千 token。 */
+  visionMaxTokens: 300,
+  /** 文案稳定判定：同一帧连续保持不变这么久（ms）才触发翻译，避开打字机/动画中途。 */
+  settleMs: 2000,
+  /** 视觉通道的超时（ms）。 */
+  visionTimeoutMs: 25000,
+  /** 视觉通道的提示词。 */
+  visionSystem:
+    '你是游戏画面的实时翻译。把画面里的英文翻译成自然、简短的中文，只输出译文本身：' +
+    '不要解释、不要加引号或括号注释、不要重复原文。菜单项、按钮、提醒用语按游戏里常见的中文说法翻。',
   /** 展示译文时的前缀。 */
   prefix: '译：',
 };
@@ -67,7 +86,8 @@ async function loadConfig() {
   const candidates = [join(PROJECT_DIR, 'config.json'), join(ROOT, 'config.json')];
   for (const candidate of candidates) {
     try {
-      const raw = await readFile(candidate, 'utf8');
+      // 去掉 BOM：PowerShell 的 Set-Content -Encoding UTF8 会写 BOM，JSON.parse 会直接报错
+      const raw = (await readFile(candidate, 'utf8')).replace(/^\uFEFF/, '');
       const user = JSON.parse(raw);
       return { ...DEFAULTS, ...(user && typeof user === 'object' ? user : {}) };
     } catch {
@@ -292,10 +312,34 @@ function normalize(text) {
 }
 
 /**
+ * 同步读 config.json 的 engine 字段，决定走 Go 守护进程还是内置 JS 实现。
+ * 同步读是为了在 apply() 里立刻分支（cordis 的 apply 要求同步完成装配）。
+ * @returns {'go' | 'js'}
+ */
+function readEngine() {
+  try {
+    const raw = readFileSync(join(PROJECT_DIR, 'config.json'), 'utf8').replace(/^\uFEFF/, '');
+    const cfg = JSON.parse(raw);
+    return cfg.engine === 'go' ? 'go' : 'js';
+  } catch {
+    return 'js';
+  }
+}
+
+/**
  * 插件主体。
  * @param {any} ctx - DSH 宿主上下文。
  */
 export function apply(ctx) {
+  // 引擎选择：config.json 的 engine = "go" 时交给 go-engine.js（只负责起停 translatord.exe）；
+  // 其余情况走下面这套 JS 实现（legacy，保留作回退）。
+  if (readEngine() === 'go') {
+    void import('./go-engine.js').then((m) => m.apply(ctx)).catch((e) => {
+      ctx.logger?.warn?.(`[screen-translator] go 引擎加载失败，回退 js：${e instanceof Error ? e.message : String(e)}`);
+    });
+    return;
+  }
+
   /** 日志一律压成单行：译文里带换行会把「一行一条」的日志结构冲垮。 */
   const flat = (msg) => String(msg).replace(/\s+/g, ' ').trim();
   const log = (msg) => {
@@ -319,11 +363,24 @@ export function apply(ctx) {
     polling: null,
     alive: true,
     /** 待翻译的文本（只保留最新一帧，翻译不阻塞抓屏）。 */
-    pendingText: null,
+    pendingJob: null,
     /** 是否有翻译在途。 */
     translating: false,
     /** 在途翻译的中止器：关闭时用它掐掉请求。 */
     abort: null,
+    /** 上一次的抓取范围（source WxH），变化时才记日志。 */
+    lastSource: '',
+    /** 上一次的回退原因，避免每拍重复告警。 */
+    lastFallback: '',
+    /** 上一次的跳过原因（目标窗口不在前台等），同样只记一次。 */
+    lastSkip: '',
+    /** 稳定判定：候选帧的规范化文本与首次出现时间。 */
+    candidateNorm: '',
+    candidateSince: 0,
+    /** 已经翻过的那段文本，避免同一段反复触发。 */
+    translatedNorm: '',
+    /** 是否处于「文案还在变」的状态，只为日志去重。 */
+    unstable: false,
     config: { ...DEFAULTS },
   };
 
@@ -431,13 +488,25 @@ export function apply(ctx) {
     return shellPath;
   }
 
-  /** 调一次 OCR 脚本，拿回 { ok, text, ms }。 */
-  async function runOcr() {
-    const { region, lang } = state.config;
+  /**
+   * 调一次 OCR 脚本，拿回 { ok, text, ms, source, fallback }。
+   * 抓取范围优先级：显式 region 矩形 > 按窗口标题抓客户区 > 整屏。
+   */
+  async function runOcr(jpegPath) {
+    const { region, lang, window: windowTitle, windowClass } = state.config;
     const shell = await resolveShell();
     const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(ROOT, 'ocr.ps1'), '-Lang', lang];
     if (region && Number.isFinite(region.x)) {
       args.push('-X', String(region.x), '-Y', String(region.y), '-W', String(region.width), '-H', String(region.height));
+    } else {
+      // 类名优先（不随标题变化），标题作为兜底
+      if (typeof windowClass === 'string' && windowClass.trim() !== '') {
+        args.push('-WindowClass', windowClass.trim());
+      }
+      if (typeof windowTitle === 'string' && windowTitle.trim() !== '') {
+        args.push('-Window', windowTitle.trim());
+      }
+      if (jpegPath) args.push('-Jpeg', jpegPath);
     }
     return new Promise((resolve) => {
       const child = spawn(shell, args, { windowsHide: true });
@@ -465,29 +534,136 @@ export function apply(ctx) {
   }
 
   /**
-   * 翻译待处理的文本（异步，不阻塞抓屏）。
+   * 取 DeepSeek 官方 key：优先走 DSH 凭据服务，拿不到再读 `~/.dsh/.credentials.yaml`。
+   * key 只在内存里用，任何日志都不打印。
+   * @returns {Promise<string | null>}
+   */
+  async function resolveApiKey() {
+    try {
+      const mod = await import('@deepseek-ai/dsh-credentials');
+      const ref = mod?.credentialRef?.('DEEPSEEK_API_KEY');
+      const got = await ctx.credentials?.resolve?.(ref);
+      if (got && typeof got.value === 'string' && got.value !== '') return got.value;
+    } catch {
+      /* 退回文件 */
+    }
+    try {
+      const home = process.env.USERPROFILE ?? process.env.HOME ?? '';
+      const yaml = await readFile(join(home, '.dsh', '.credentials.yaml'), 'utf8');
+      const m = yaml.match(/DEEPSEEK_API_KEY:\s*(\S+)/);
+      if (m) return m[1];
+    } catch {
+      /* 没有就没有 */
+    }
+    return null;
+  }
+
+  /**
+   * 视觉通道：把窗口截图发给模型翻译。
+   * @param {string} jpegPath - 本帧 JPEG。
+   * @param {AbortSignal} outer - 关闭时中止。
+   * @returns {Promise<{ok:true,text:string,usage:{prompt:number,completion:number}} | {ok:false,error:string}>}
+   */
+  async function translateVision(jpegPath, outer) {
+    const selection = ctx.agentDefaultModel?.currentSelection?.();
+    if (!selection?.model) return { ok: false, error: '当前对话未配置模型' };
+    const key = await resolveApiKey();
+    if (!key) return { ok: false, error: '没有可用的 DEEPSEEK_API_KEY' };
+
+    let b64;
+    try {
+      b64 = (await readFile(jpegPath)).toString('base64');
+    } catch (e) {
+      return { ok: false, error: `读图失败：${e instanceof Error ? e.message : String(e)}` };
+    }
+
+    const timeout = AbortSignal.timeout(Number.isFinite(state.config.visionTimeoutMs) ? state.config.visionTimeoutMs : 25_000);
+    const signal = outer && typeof AbortSignal.any === 'function' ? AbortSignal.any([outer, timeout]) : timeout;
+
+    let res;
+    try {
+      res = await fetch(`${String(state.config.visionApiBase).replace(/\/+$/, '')}/chat/completions`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+        signal,
+        body: JSON.stringify({
+          model: selection.model,
+          temperature: 0.2,
+          max_tokens: Number.isFinite(state.config.visionMaxTokens) ? state.config.visionMaxTokens : 300,
+          messages: [
+            { role: 'system', content: state.config.visionSystem },
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: '把这张游戏画面里的英文翻译成中文，只输出译文。' },
+                { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${b64}` } },
+              ],
+            },
+          ],
+        }),
+      });
+    } catch (e) {
+      return { ok: false, error: `请求失败：${e instanceof Error ? e.message : String(e)}` };
+    }
+
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || body.error) {
+      return { ok: false, error: `HTTP ${res.status} ${JSON.stringify(body.error ?? {}).slice(0, 120)}` };
+    }
+    const text = String(body.choices?.[0]?.message?.content ?? '').trim();
+    if (text === '') return { ok: false, error: '模型未返回译文' };
+    return {
+      ok: true,
+      text,
+      usage: { prompt: body.usage?.prompt_tokens ?? 0, completion: body.usage?.completion_tokens ?? 0 },
+    };
+  }
+
+  /**
+   * 翻译待处理的一帧（异步，不阻塞抓屏）。
    *
-   * 同一时刻只允许一次翻译在途：新帧只在 pendingText 里排队，旧帧直接丢弃；
-   * 关闭时由 stop() 通过 AbortController 掐断，避免关闭后还往气泡里写字。
+   * 同一时刻只允许一次翻译在途：新帧只排队，旧帧直接丢弃。
+   * 视觉通道失败时自动回退到 OCR 文本，不吞掉这一帧。
    */
   async function processPending() {
     if (!state.on || state.translating) return;
-    const text = state.pendingText;
-    if (!text) return;
-    state.pendingText = null;
+    const job = state.pendingJob;
+    if (!job) return;
+    state.pendingJob = null;
     state.translating = true;
     const abort = new AbortController();
     state.abort = abort;
+    const text = job.text;
     try {
-      const res = await translate(ctx, text, state.config.system, abort.signal, state.config.translateTimeoutMs);
-      if (!res.ok) {
-        warn(`翻译失败：${res.error}（原文 ${text.slice(0, 50)}）`);
-        return;
+      let zh = '';
+      if (job.kind === 'vision' && job.jpeg) {
+        const v = await translateVision(job.jpeg, abort.signal);
+        if (v.ok) {
+          zh = v.text;
+          log(`视觉翻译 prompt=${v.usage.prompt} completion=${v.usage.completion}（${text.length} 字符）`);
+        } else if (state.on) {
+          warn(`视觉翻译失败（${v.error}），回退 OCR 文本`);
+        }
       }
-      const zh = res.text;
+      if (zh === '') {
+        const res = await translate(ctx, text, state.config.system, abort.signal, state.config.translateTimeoutMs);
+        if (!res.ok) {
+          // 关闭时中止属于正常流程，不当失败刷日志
+          if (state.on) warn(`翻译失败：${res.error}（原文 ${text.slice(0, 50)}）`);
+          return;
+        }
+        zh = res.text;
+      }
       // 关闭 / 卸载过程中返回的结果一律丢弃
       if (!state.on || !state.alive) return;
       if (zh === state.lastTranslated) return;
+      // OCR 抖动会让同一段画面被翻两次，两次译文通常只差几个字：
+      // 开头 10 个字相同就当作同一句，跳过重复弹泡（调用已经发生，这里只治气泡刷屏）
+      if (state.lastTranslated !== '' && zh.slice(0, 10) === state.lastTranslated.slice(0, 10)) {
+        log(`译文与上一条相同，跳过重复弹泡：${zh.slice(0, 20)}`);
+        state.lastTranslated = zh;
+        return;
+      }
       state.lastTranslated = zh;
       const said = await say(state.config.prefix + zh.slice(0, 300));
       if (!said) {
@@ -499,42 +675,88 @@ export function apply(ctx) {
     } catch (e) {
       warn(`翻译异常：${e instanceof Error ? e.message : String(e)}`);
     } finally {
+      // 视觉通道的临时 JPEG 用完即删
+      if (job.jpeg) await unlink(job.jpeg).catch(() => {});
       state.translating = false;
       state.abort = null;
       // 期间又来了新帧就接着翻
-      if (state.on && state.pendingText) void processPending();
+      if (state.on && state.pendingJob) void processPending();
     }
   }
 
   /** 一轮：截屏 → OCR → 判重 → 排进翻译队列（翻译在后台跑，不堵下一拍）。 */
   async function tick() {
     if (!state.on) return;
+    let nextDelay = state.config.intervalMs;
     try {
-      const ocr = await runOcr();
+      const wantsVision = state.config.translateMode === 'vision';
+      const jpegPath = wantsVision ? join(process.env.TEMP ?? '.', `dsh-st-vision-${Date.now()}.jpg`) : '';
+      const ocr = await runOcr(jpegPath);
       if (!ocr?.ok) {
         warn(`OCR 失败：${ocr?.error ?? 'unknown'}`);
       } else {
+        // 抓取范围变化时留一条痕迹：窗口没找到会一直回退整屏，不报出来很难查
+        const src = `${ocr.source ?? '?'} ${ocr.w ?? '?'}x${ocr.h ?? '?'}${ocr.fallback ? ` fallback=${ocr.fallback}` : ''}`;
+        if (src !== state.lastSource) {
+          state.lastSource = src;
+          log(`抓取范围：${src}`);
+        }
+        if (ocr.fallback && state.lastFallback !== ocr.fallback) {
+          state.lastFallback = ocr.fallback;
+          warn(`窗口「${state.config.window ?? ''}」没找到（${ocr.fallback}），已改用整屏`);
+        } else if (!ocr.fallback) {
+          state.lastFallback = '';
+        }
+        // 目标窗口不在前台：此时抓到的会是被遮挡后的画面，直接跳过这一拍
+        if (ocr.skipped) {
+          if (state.lastSkip !== ocr.skipped) {
+            state.lastSkip = ocr.skipped;
+            log(`跳过：${ocr.skipped === 'not-foreground' ? '目标窗口不在前台' : ocr.skipped}`);
+          }
+          if (jpegPath) await unlink(jpegPath).catch(() => {});
+          return;
+        }
+        state.lastSkip = '';
         const text = cleanText(ocr.text).slice(0, state.config.maxChars);
         if (text.length >= state.config.minChars && looksEnglish(text)) {
-          // 判重：短文本 OCR 抖动大，阈值放宽到 0.45；长文本仍用 0.8。比对最近 3 帧。
           const norm = normalize(text);
-          const threshold = norm.length < 60 ? 0.45 : 0.8;
-          const repeat = state.recent.some((prev) => similarity(norm, prev) >= threshold);
-          if (!repeat) {
-            state.recent.unshift(norm);
-            state.recent.length = Math.min(state.recent.length, 3);
-            log(`OCR ${text.length} 字符：${text.slice(0, 60)}`);
-            state.pendingText = text;
-            void processPending();
+          // 稳定判定以「文本」为准：像素每帧都在动（光标闪烁、精灵动画），拿哈希判稳会永远等不到稳定。
+          // 相似度 ≥ 0.8 视为同一段（容忍 OCR 抖动），否则视为新文案、重新计时。
+          const sameText = state.candidateNorm !== '' && similarity(norm, state.candidateNorm) >= 0.8;
+
+          if (!sameText) {
+            // 文案还在变（打字机效果）：记下新候选，settleMs 后再看它是否稳定
+            state.candidateNorm = norm;
+            state.candidateSince = Date.now();
+            nextDelay = state.config.settleMs;
+            if (!state.unstable) {
+              state.unstable = true;
+              log(`文案变化中，等 ${state.config.settleMs} ms 稳定后再翻`);
+            }
+            if (jpegPath) await unlink(jpegPath).catch(() => {});
           } else {
-            log(`跳过（与最近帧相似）：${text.slice(0, 40)}`);
+            state.candidateNorm = norm;
+            if (norm !== state.translatedNorm && Date.now() - state.candidateSince >= state.config.settleMs) {
+              // 稳定满 settleMs 且这段文案还没翻过 → 才真正触发
+              state.unstable = false;
+              state.translatedNorm = norm;
+              log(`OCR ${text.length} 字符：${text.slice(0, 60)}`);
+              state.pendingJob = { kind: wantsVision ? 'vision' : 'text', text, jpeg: jpegPath };
+              void processPending();
+            } else if (jpegPath) {
+              // 还没稳够时间，或这段已经翻过
+              await unlink(jpegPath).catch(() => {});
+            }
           }
+        } else if (jpegPath) {
+          // 没通过字符数/语言门槛，这张图也不用了
+          await unlink(jpegPath).catch(() => {});
         }
       }
     } catch (e) {
       warn(`tick 异常：${e instanceof Error ? e.message : String(e)}`);
     } finally {
-      if (state.on && state.alive) state.timer = setTimeout(tick, state.config.intervalMs);
+      if (state.on && state.alive) state.timer = setTimeout(tick, nextDelay ?? state.config.intervalMs);
     }
   }
 
@@ -543,7 +765,11 @@ export function apply(ctx) {
     state.on = true;
     state.recent = [];
     state.lastTranslated = '';
-    state.pendingText = null;
+    state.candidateNorm = '';
+    state.candidateSince = 0;
+    state.translatedNorm = '';
+    state.unstable = false;
+    state.pendingJob = null;
     const ok = await acquireLock();
     if (!ok) {
       state.on = false;
@@ -561,7 +787,7 @@ export function apply(ctx) {
     state.on = false;
     if (state.timer) clearTimeout(state.timer);
     state.timer = null;
-    state.pendingText = null;
+    state.pendingJob = null;
     // 在途请求立刻中止：否则它返回后还会往已释放的锁上写气泡
     if (state.abort) {
       state.abort.abort();
@@ -609,6 +835,7 @@ export function apply(ctx) {
     () => {
       loadConfig().then((cfg) => {
         state.config = { ...DEFAULTS, ...cfg };
+        log(`已加载配置 v3：mode=${state.config.region ? 'region' : state.config.window ? `window(${state.config.window})` : 'full'}`);
       });
       registerMenu().then(() => (state.polling = pollMenu()));
       return () => {

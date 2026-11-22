@@ -23,3 +23,13 @@ temp/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# 本地执行方案（不进版本库）
+plans/
+
+# 构建产物 / 运行期临时文件
+bin/
+.tmp/
+*.exe
+*.bak-*
+
