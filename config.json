@@ -1,0 +1,11 @@
+﻿{
+  "_note": "屏幕翻译插件的用户配置：只写要改的键，缺省值见 index.js 的 DEFAULTS。改完重启 DSH 生效。",
+  "intervalMs": 4000,
+  "duration": 12000,
+  "minChars": 12,
+  "maxChars": 600,
+  "translateTimeoutMs": 15000,
+  "lang": "en-GB",
+  "prefix": "译：",
+  "region": null
+}

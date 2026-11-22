@@ -1,0 +1,17 @@
+{
+  "name": "dsh-pet-screen-translator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "给 dsh-pet 加一只眼睛：右键菜单开启后，定时截屏 OCR 画面里的英文，用当前模型翻成中文，借桌宠气泡念出来。",
+  "type": "module",
+  "main": "index.js",
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm": "*"
+  }
+}

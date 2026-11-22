@@ -1,0 +1,25 @@
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 日志 / 临时产物
+*.log
+npm-debug.log*
+.npm/
+.cache/
+tmp/
+temp/
+*.tmp
+
+# 本地私密配置（需要覆盖 config.json 时另建此文件）
+.env
+.env.*
+!.env.example
+*.local
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store

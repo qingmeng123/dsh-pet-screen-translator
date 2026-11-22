@@ -1,0 +1,5 @@
+# dsh-pet-screen-translator 的 bundle patch
+# 只做一件事：往配置树里插一行，让 DSH 启动时把本插件当作宿主插件加载。
+- insert:
+    - id: screen-translator
+      name: 'dsh-pet-screen-translator'
