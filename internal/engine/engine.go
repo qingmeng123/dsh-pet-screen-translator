@@ -196,7 +196,9 @@ func (e *Engine) Step(ctx context.Context) (time.Duration, error) {
 	}
 
 	// 画面稳定：这时才做一次 OCR，用来确认「是不是英文」并留日志
+	ocrStart := time.Now()
 	raw, oerr := e.OCR.Text(ctx, shot.JPEG)
+	ocrMs := time.Since(ocrStart).Milliseconds()
 	if oerr != nil {
 		e.warnf("ocr failed: %v", oerr)
 		e.setState(StateError)
@@ -231,7 +233,7 @@ func (e *Engine) Step(ctx context.Context) (time.Duration, error) {
 	e.lastOcrNorm = norm
 
 	e.setState(StateTranslating)
-	e.logf("OCR %d 字符：%s", len([]rune(text)), truncate(text, 60))
+	e.logf("OCR %d 字符（%d ms）：%s", len([]rune(text)), ocrMs, truncate(text, 60))
 
 	zh, usage, said, terr := e.translateAndSay(ctx, shot, text)
 	if terr != nil {

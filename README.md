@@ -238,7 +238,7 @@ dsh plugin --profile desktop remove dsh-pet-screen-translator
 | 阶段 | 耗时 |
 | --- | --- |
 | 抓屏 + JPEG | 36 ms |
-| OCR（含 PowerShell 启动） | 309 ms（静态画面跳过） |
+| OCR（常驻进程） | **23～74 ms**（首帧 74 ms 预热，之后 ~24 ms） |
 | 视觉翻译（`reasoningEffort: "none"`） | **0.6～0.9 s** |
 | 判稳窗口 | 100 ms（`settleMs`，周期语义） |
 
@@ -253,3 +253,16 @@ dsh plugin --profile desktop remove dsh-pet-screen-translator
 
 翻译请求走 SSE 流式（`stream: true`），气泡**按 120 ms 节流增量刷新**，首字约 0.47 s 出现，全文约 0.68 s 完成。
 流式失败会自动回退非流式；开关是配置里的 `stream`（默认 `true`）。
+
+### 常驻 OCR 进程
+
+翻译开启时随守护进程一起启动一个常驻 PowerShell（`ocr-server.ps1`），只初始化一次 WinRT OCR 引擎；
+之后每次识别只是「写一行图片路径 → 读一行 JSON」。关闭翻译时守护进程退出、OCR 子进程的 stdin 断开，
+它自己读完最后一行就结束 —— 不会留孤儿进程。
+
+| 方式 | 单次 OCR |
+| --- | --- |
+| 一次性调用 `ocr-file.ps1` | 300～440 ms（每次都要启动 PowerShell + 初始化） |
+| **常驻 `ocr-server.ps1`** | **23～74 ms** |
+
+配置开关：`"ocrWorker": true`（默认）；置 false 退回一次性调用。

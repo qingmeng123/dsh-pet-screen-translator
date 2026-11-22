@@ -57,6 +57,8 @@ type Config struct {
 	ReasoningEffort string `json:"reasoningEffort"`
 	// DedupeSimilarity 是文本去重阈值：新 OCR 文本与上次相似度 ≥ 它就跳过翻译（默认 0.9）。
 	DedupeSimilarity float64 `json:"dedupeSimilarity"`
+	// OCRWorker 为 true 时用常驻 OCR 进程（只启动一次 PowerShell），显著降低单次识别延迟。
+	OCRWorker bool `json:"ocrWorker"`
 	// RegionMode：fixed = 用 FingerprintRegion 固定矩形；auto = 在线学习文字区（实验）。
 	RegionMode string `json:"regionMode"`
 	// SuppressSeconds 是"译文重复"后的抑制秒数：这段时间内同一屏不再重复翻（默认 15）。
@@ -88,6 +90,7 @@ func Default() Config {
 		PixelChangeRatio:   0.005, // 0.5%：能抓住"只多一行字"（约 1.2%），又放过光标闪烁（约 0.03%）
 		DedupeSimilarity:   0.9,
 		SuppressSeconds:    15,
+		OCRWorker:          true,
 		RegionMode:         "fixed",
 		// 默认只看窗口下方 45%：绝大多数 RPG 对话框都在这一带
 		FingerprintRegion: Region{X0: 0, Y0: 0.55, X1: 1, Y1: 1},

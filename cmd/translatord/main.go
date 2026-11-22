@@ -160,13 +160,36 @@ func cmdRun(args []string) int {
 	}
 	defer logger.Close()
 
-	script := filepath.Join(*workspace, "dsh-pet-screen-translator", "ocr-file.ps1")
-	ocrProvider := &ocr.PowerShell{
-		Exe:     `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
-		Script:  script,
-		Lang:    cfg.Lang,
-		Timeout: time.Duration(cfg.OCRTimeoutMs) * time.Millisecond,
-		TempDir: filepath.Join(*workspace, "dsh-pet-screen-translator", ".tmp"),
+	projDir := filepath.Join(*workspace, "dsh-pet-screen-translator")
+	tmpDir := filepath.Join(projDir, ".tmp")
+	ocrExe := `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`
+	ocrTimeout := time.Duration(cfg.OCRTimeoutMs) * time.Millisecond
+
+	// OCR：优先常驻进程（只启一次 PowerShell + WinRT），失败则退回一次性调用。
+	var ocrProvider engine.OCR
+	var ocrWorker *ocr.Worker
+	if cfg.OCRWorker {
+		w, err := ocr.StartWorker(ocrExe, filepath.Join(projDir, "ocr-server.ps1"), cfg.Lang, tmpDir, ocrTimeout)
+		if err != nil {
+			logger.Warn("常驻 OCR 启动失败，退回一次性调用：%v", err)
+		} else {
+			ocrWorker = w
+			ocrProvider = w
+			logger.Info("常驻 OCR 已就绪（单次识别 ~10ms，不再是 ~440ms）")
+		}
+	}
+	if ocrProvider == nil {
+		ocrProvider = &ocr.PowerShell{
+			Exe:     ocrExe,
+			Script:  filepath.Join(projDir, "ocr-file.ps1"),
+			Lang:    cfg.Lang,
+			Timeout: ocrTimeout,
+			TempDir: tmpDir,
+		}
+	}
+	if ocrWorker != nil {
+		// 守护进程退出时一并结束 OCR 子进程
+		defer ocrWorker.Close()
 	}
 
 	tr := translate.New(cfg.VisionAPIBase, key, cfg.Model, cfg.VisionMaxTokens,
