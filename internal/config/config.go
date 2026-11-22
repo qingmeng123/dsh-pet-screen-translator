@@ -1,4 +1,4 @@
-﻿// Package config 负责配置的加载与默认值。
+// Package config 负责配置的加载与默认值。
 //
 // 优先级：命令行 > config.json > 内置默认值。
 // 读取时会剥掉 UTF-8 BOM —— PowerShell 写的 JSON 常带 BOM，json.Unmarshal 会直接报错。
@@ -67,6 +67,11 @@ type Config struct {
 	FingerprintRegion Region `json:"fingerprintRegion"`
 	// Stream 为 true 时边翻译边更新气泡（首字明显更快）。
 	Stream bool `json:"stream"`
+	// Speak 为 true 时，完整译文出来后让桌宠用配置的音色念一遍；流式半截永远不念。
+	Speak bool `json:"speak"`
+	// VoiceSurface 是念给哪一端听：desktop / web。必须与宠物实际 display 一致，
+	// 否则未显示的那一端会被 pet-not-displayed 拒绝（连气泡也不更新）。
+	VoiceSurface string `json:"voiceSurface"`
 
 	OCRScriptPath string `json:"ocrScriptPath"`
 	PowerShell    string `json:"powerShell"`
@@ -106,6 +111,8 @@ func Default() Config {
 		VisionAPIBase:      "https://api.deepseek.com",
 		Model:              "deepseek-flash",
 		Stream:             true,
+		Speak:              true,
+		VoiceSurface:       "desktop",
 		ReasoningEffort:    "none", // 视觉翻译不需要思考：实测 none 时 completion=6、延迟 ~0.9s（low 会波动到 8s+）
 		VisionSystem: "你是游戏画面的实时翻译。把画面里的英文翻译成自然、简短的中文，只输出译文本身：" +
 			"不要解释、不要加引号或括号注释、不要重复原文。菜单项、按钮、提醒用语按游戏里常见的中文说法翻。",
@@ -182,6 +189,9 @@ func (c *Config) normalize() {
 	}
 	if c.SettleSimilarity <= 0 || c.SettleSimilarity > 1 {
 		c.SettleSimilarity = d.SettleSimilarity
+	}
+	if c.VoiceSurface != "desktop" && c.VoiceSurface != "web" {
+		c.VoiceSurface = d.VoiceSurface
 	}
 	if c.LogMaxBytes < 4096 {
 		c.LogMaxBytes = d.LogMaxBytes

@@ -1,4 +1,4 @@
-﻿package engine
+package engine
 
 import (
 	"context"
@@ -61,6 +61,7 @@ func (f *fakeTranslator) Text(context.Context, string) (string, error) {
 
 type fakePet struct {
 	says     []string
+	spoken   []string
 	locks    int
 	released []string
 }
@@ -72,6 +73,13 @@ func (f *fakePet) Lock(context.Context) (string, error) {
 
 func (f *fakePet) Say(_ context.Context, _, text string) error {
 	f.says = append(f.says, text)
+	return nil
+}
+
+// SaySpoken 记录「写气泡 + 念」的终稿；says 也追加，方便沿用旧断言。
+func (f *fakePet) SaySpoken(_ context.Context, _, text string) error {
+	f.says = append(f.says, text)
+	f.spoken = append(f.spoken, text)
 	return nil
 }
 
@@ -300,6 +308,10 @@ func TestStreamingSaysFinalText(t *testing.T) {
 	}
 	if last := pet.says[len(pet.says)-1]; last != "译：选择你喜欢的躯干。" {
 		t.Fatalf("最后一条气泡应为完整译文，got %q", last)
+	}
+	// 核心契约：流式半截只写气泡，只有完整译文才念一次。
+	if len(pet.spoken) != 1 || pet.spoken[0] != "译：选择你喜欢的躯干。" {
+		t.Fatalf("只应在终稿念一次，got %#v", pet.spoken)
 	}
 	if pet.locks != 1 || len(pet.released) != 1 {
 		t.Fatalf("流式应只取一次锁并释放，locks=%d released=%v", pet.locks, pet.released)

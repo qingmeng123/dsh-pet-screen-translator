@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -96,14 +97,23 @@ func (c *Client) Release(ctx context.Context, petID, lockID string) error {
 }
 
 // Broadcast 往气泡里写一句话（需锁）。
-func (c *Client) Broadcast(ctx context.Context, petID, lockID, text string, duration time.Duration) error {
+//
+// speak=true 时让桌宠念出来；dsh-pet 要求 surface 指定到具体一端（desktop / web）
+// 才会写 voiceTo，传 any 时只弹气泡。surface 为空按 any 处理。
+func (c *Client) Broadcast(ctx context.Context, petID, lockID, text string, duration time.Duration, speak bool, surface string) error {
 	var out struct {
 		OK     bool   `json:"ok"`
 		Reason string `json:"reason"`
 	}
-	url := fmt.Sprintf("/broadcast?pet=%s&surface=any&lock=%s", petID, lockID)
+	if surface == "" {
+		surface = "any"
+	}
+	path := fmt.Sprintf("/broadcast?pet=%s&surface=%s&lock=%s", petID, url.QueryEscape(surface), lockID)
 	body := map[string]any{"text": text, "duration": duration.Milliseconds(), "anim": false}
-	if err := c.postJSON(ctx, url, body, &out); err != nil {
+	if speak {
+		body["speak"] = true
+	}
+	if err := c.postJSON(ctx, path, body, &out); err != nil {
 		return err
 	}
 	if !out.OK {

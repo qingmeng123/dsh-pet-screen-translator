@@ -41,6 +41,8 @@ function labelFor(state) {
       ? '画面被遮挡'
       : state.endsWith('window-not-found')
         ? '游戏窗口未找到'
+        : state.endsWith('window-minimized')
+          ? '游戏已最小化'
         : '游戏不在前台';
     return `${PREFIX} ▸ 开关：${why}`;
   }
@@ -81,7 +83,7 @@ function waitExit(child, ms) {
  * @param {any} ctx - DSH 宿主上下文。
  */
 export function apply(ctx) {
-  const state = { child: null, controlPort: 0, alive: true, state: 'stopped', label: '', pollTimer: null, region: 'fixed', regionLabel: '' };
+  const state = { child: null, controlPort: 0, alive: true, state: 'stopped', label: '', pollTimer: null, region: 'fixed', regionLabel: '', restarts: 0, stopping: false };
 
   const dshPort = () => ctx.webServer?.port ?? 0;
 
@@ -129,6 +131,7 @@ export function apply(ctx) {
 
   /** 停止：先礼貌关闭（释放锁），再兜底硬杀。 */
   async function stopDaemon() {
+    state.stopping = true;
     const child = state.child;
     stopStatusPoll();
     if (!child || child.exitCode !== null) {
@@ -172,6 +175,7 @@ export function apply(ctx) {
       return;
     }
     state.controlPort = 0;
+    state.stopping = false;
     await render('starting');
     const child = spawn(BIN, ['run', '--dsh-port', String(p), '--workspace', WORKSPACE], {
       windowsHide: true,
@@ -195,11 +199,20 @@ export function apply(ctx) {
     child.stderr?.on('data', (d) => void logLine(`stderr: ${String(d).slice(0, 400)}`));
     child.on('exit', (code, signal) => {
       void logLine(`daemon exited code=${code} signal=${signal}`);
-      if (state.child === child) {
-        state.child = null;
-        state.controlPort = 0;
-        stopStatusPoll();
-        void render('exited');
+      if (state.child !== child) return;
+      state.child = null;
+      state.controlPort = 0;
+      stopStatusPoll();
+      void render('exited');
+
+      // 意外退出（非主动关闭、非 0 退出码）→ 自动重启，最多 3 次，避免玩到一半悄无声息地停掉
+      const unexpected = state.alive && !state.stopping && code !== 0;
+      if (unexpected && state.restarts < 3) {
+        state.restarts += 1;
+        void logLine(`守护进程异常退出，${3}s 后自动重启（第 ${state.restarts}/3 次）`);
+        setTimeout(() => {
+          if (state.alive && !state.child) void startDaemon();
+        }, 3000);
       }
     });
     child.on('error', (e) => {

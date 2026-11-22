@@ -1,6 +1,7 @@
 ﻿package capture
 
 import (
+	"errors"
 	"context"
 	"fmt"
 
@@ -36,6 +37,10 @@ func (s *Shooter) Capture(_ context.Context) (engine.Shot, error) {
 		}
 		r, err := ClientRect(hwnd)
 		if err != nil {
+			// 游戏被最小化（客户区 0x0）不是错误，跳过这一拍即可
+			if errors.Is(err, ErrClientTooSmall) {
+				return engine.Shot{Source: "window", Skipped: "window-minimized"}, nil
+			}
 			return engine.Shot{}, fmt.Errorf("client rect: %w", err)
 		}
 		if !s.AllowBackground {

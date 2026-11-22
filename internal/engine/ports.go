@@ -1,4 +1,4 @@
-﻿// Package engine 是屏幕翻译的调度核心：抓屏 → 判稳 → 翻译 → 写气泡。
+// Package engine 是屏幕翻译的调度核心：抓屏 → 判稳 → 翻译 → 写气泡。
 //
 // 它只依赖下面这些接口，不碰 Win32、不碰 HTTP、不碰 PowerShell，
 // 因此可以用假时钟 + 假实现把「打字机 / 稳定 / 去重 / 降级」全部做成单测。
@@ -49,6 +49,9 @@ type Streamer interface {
 // Pet 是桌宠的说话通道。
 type Pet interface {
 	Lock(ctx context.Context) (string, error)
+	// Say 只把文本写进气泡，不出声（流式半截、状态提示用）。
 	Say(ctx context.Context, lockID, text string) error
+	// SaySpoken 写进气泡并让桌宠念出来（完整译文用）；实现方按配置决定是否真的出声。
+	SaySpoken(ctx context.Context, lockID, text string) error
 	Release(ctx context.Context, lockID string) error
 }

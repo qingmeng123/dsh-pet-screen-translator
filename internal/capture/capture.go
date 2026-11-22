@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"sync"
 	"syscall"
 	"unsafe"
 )
@@ -96,33 +97,48 @@ func Foreground() uintptr {
 }
 
 // FindWindow 按类名或标题片段（不区分大小写）找第一个可见窗口。类名优先。
+// windowSearch 是枚举时用的"当前条件 + 结果"，配合只创建一次的 callback 使用。
+//
+// 注意：syscall.NewCallback 每注册一个就永久占用一个回调槽（Go 上限 2000 个）。
+// 早期版本在每次 FindWindow 里都 NewCallback，跑 ~2000 拍后就会
+// "fatal error: too many callback functions" 直接崩掉进程。
+var (
+	searchMu   sync.Mutex
+	searchCls  string
+	searchTit  string
+	searchHits uintptr
+)
+
+// enumCb 只在包初始化时注册一次，之后反复使用。
+var enumCb = syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
+	if v, _, _ := procVis.Call(hwnd); v == 0 {
+		return 1 // 继续枚举
+	}
+	if searchCls != "" {
+		if name := windowText(procCls, hwnd); containsFold(name, searchCls) {
+			searchHits = hwnd
+			return 0
+		}
+	}
+	if searchTit != "" {
+		if name := windowText(procText, hwnd); containsFold(name, searchTit) {
+			searchHits = hwnd
+			return 0
+		}
+	}
+	return 1
+})
+
+// FindWindow 按类名或标题片段（不区分大小写）找第一个可见窗口。类名优先。
 func FindWindow(class, title string) (uintptr, error) {
-	var found uintptr
-	var matched string
-	cb := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
-		if v, _, _ := procVis.Call(hwnd); v == 0 {
-			return 1 // 继续枚举
-		}
-		if class != "" {
-			if name := windowText(procCls, hwnd); containsFold(name, class) {
-				found, matched = hwnd, "class:"+class
-				return 0
-			}
-		}
-		if title != "" {
-			if name := windowText(procText, hwnd); containsFold(name, title) {
-				found, matched = hwnd, "title:"+title
-				return 0
-			}
-		}
-		return 1
-	})
-	_, _, _ = procEnum.Call(cb, 0)
-	if found == 0 {
+	searchMu.Lock()
+	defer searchMu.Unlock()
+	searchCls, searchTit, searchHits = class, title, 0
+	_, _, _ = procEnum.Call(enumCb, 0)
+	if searchHits == 0 {
 		return 0, ErrWindowNotFound
 	}
-	_ = matched
-	return found, nil
+	return searchHits, nil
 }
 
 // ClientRect 返回窗口客户区在屏幕坐标系里的矩形（物理像素）。

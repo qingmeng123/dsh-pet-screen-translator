@@ -13,6 +13,13 @@
   "translateMode": "vision",
   "settleMs": 100,
   "engine": "go",
+  "speak": false,
+  "voiceSurface": "desktop",
+  "breeze": {
+    "voiceId": "voc_puvq4zh92bvs",
+    "voiceName": "灵动顽皮幼女",
+    "voiceTag": "Breeze · 大肥鱼"
+  },
   "visionMaxTokens": 0,
   "reasoningEffort": "none",
   "pixelChangeRatio": 0.005,

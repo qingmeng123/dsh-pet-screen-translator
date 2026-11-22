@@ -1,4 +1,4 @@
-﻿// translatord 是 dsh-pet 屏幕翻译的 Go 守护进程。
+// translatord 是 dsh-pet 屏幕翻译的 Go 守护进程。
 //
 // 用法：
 //
@@ -210,6 +210,8 @@ func cmdRun(args []string) int {
 			c:        pet.New(cfg.DSHPort, cfg.PetBasePath),
 			petID:    *petID,
 			duration: time.Duration(cfg.DurationMs) * time.Millisecond,
+			speak:    cfg.Speak,
+			surface:  cfg.VoiceSurface,
 		},
 		Log: logger,
 	}
@@ -226,10 +228,10 @@ func cmdRun(args []string) int {
 	defer control.Close()
 
 	// 启动时把关键参数打出来，方便确认"跑的是不是最新配置"
-	logger.Info("参数：settle=%dms interval=%dms pixelRatio=%.3f dedupe=%.2f region=[%.2f,%.2f,%.2f,%.2f] stream=%v reasoning=%s model=%s",
+	logger.Info("参数：settle=%dms interval=%dms pixelRatio=%.3f dedupe=%.2f region=[%.2f,%.2f,%.2f,%.2f] stream=%v speak=%v surface=%s reasoning=%s model=%s",
 		cfg.SettleMs, cfg.IntervalMs, cfg.PixelChangeRatio, cfg.DedupeSimilarity,
 		cfg.FingerprintRegion.X0, cfg.FingerprintRegion.Y0, cfg.FingerprintRegion.X1, cfg.FingerprintRegion.Y1,
-		cfg.Stream, cfg.ReasoningEffort, cfg.Model)
+		cfg.Stream, cfg.Speak, cfg.VoiceSurface, cfg.ReasoningEffort, cfg.Model)
 	logger.Info("translatord 启动：mode=%s windowClass=%s window=%s port=%d control=%d",
 		cfg.TranslateMode, cfg.WindowClass, cfg.WindowTitle, cfg.DSHPort, control.Port())
 	fmt.Printf("CONTROL_PORT=%d\n", control.Port())

@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"context"
@@ -50,6 +50,10 @@ type petAdapter struct {
 	c        *pet.Client
 	petID    string
 	duration time.Duration
+	// speak 为 false 时 SaySpoken 退化成只写气泡。
+	speak bool
+	// surface 是播报端：desktop / web；必须与宠物 display 一致。
+	surface string
 }
 
 func (p petAdapter) Lock(ctx context.Context) (string, error) {
@@ -57,7 +61,15 @@ func (p petAdapter) Lock(ctx context.Context) (string, error) {
 }
 
 func (p petAdapter) Say(ctx context.Context, lockID, text string) error {
-	return p.c.Broadcast(ctx, p.petID, lockID, text, p.duration)
+	return p.c.Broadcast(ctx, p.petID, lockID, text, p.duration, false, "any")
+}
+
+// SaySpoken 只给完整译文用：写气泡并要求对应端点念出来。
+func (p petAdapter) SaySpoken(ctx context.Context, lockID, text string) error {
+	if !p.speak {
+		return p.Say(ctx, lockID, text)
+	}
+	return p.c.Broadcast(ctx, p.petID, lockID, text, p.duration, true, p.surface)
 }
 
 func (p petAdapter) Release(ctx context.Context, lockID string) error {

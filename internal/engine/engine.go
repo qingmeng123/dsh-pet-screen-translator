@@ -1,4 +1,4 @@
-﻿package engine
+package engine
 
 import (
 	"context"
@@ -108,6 +108,17 @@ func (e *Engine) Speak(ctx context.Context, text string) error {
 		return err
 	}
 	err := e.Pet.Say(ctx, e.lockID, text)
+	e.release()
+	return err
+}
+
+// SpeakSpoken 写气泡并让桌宠念出来：**取锁 → 说 → 立刻放锁**。
+// 只用于完整译文；流式半截仍走 Speak（只弹气泡）。
+func (e *Engine) SpeakSpoken(ctx context.Context, text string) error {
+	if err := e.Acquire(ctx); err != nil {
+		return err
+	}
+	err := e.Pet.SaySpoken(ctx, e.lockID, text)
 	e.release()
 	return err
 }
@@ -280,7 +291,7 @@ func (e *Engine) translateAndSay(ctx context.Context, shot Shot, text string) (s
 	}
 	prev := e.lastTranslated
 	e.lastTranslated = zh
-	if err := e.Speak(ctx, e.Cfg.Prefix+truncate(zh, 300)); err != nil {
+	if err := e.SpeakSpoken(ctx, e.Cfg.Prefix+truncate(zh, 300)); err != nil {
 		return zh, usage, false, fmt.Errorf("写气泡失败: %w", err)
 	}
 	e.noteTranslation(zh, prev)
@@ -329,9 +340,14 @@ func (e *Engine) sayStream(ctx context.Context, st Streamer, jpeg []byte) (strin
 	}
 	zh = strings.TrimSpace(zh)
 	if zh != "" {
-		push(zh, true)
+		// 终稿：气泡 + 语音一次写完。流式半截只走 push（Say），永远不出声。
+		// 与上一条几乎相同就只补气泡，不重复念，省一次 Breeze 合成。
 		if dup := e.noteTranslation(zh, prev); dup {
+			push(zh, true)
 			e.logf("译文与上一条几乎相同，%d 秒内不再翻这一屏", int(e.Cfg.SuppressSeconds))
+		} else if err := e.Pet.SaySpoken(ctx, e.lockID, e.Cfg.Prefix+truncate(zh, 300)); err != nil {
+			e.warnf("终稿写气泡/播报失败：%v", err)
+			push(zh, true) // 播报失败也要把终稿补进气泡
 		}
 		e.lastTranslated = zh
 	}

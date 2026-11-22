@@ -1,4 +1,4 @@
-﻿# dsh-pet-screen-translator
+# dsh-pet-screen-translator
 
 给 [dsh-pet](https://github.com/PC2005-cloud/dsh-pet) 加一套「画面英文 → 中文气泡」的能力：右键菜单里多一项 **更多 / 屏幕翻译**，点开即开、再点即关。
 
@@ -198,6 +198,10 @@ dsh plugin --profile desktop add file:D:/deepseek/projects/dsh-pet-screen-transl
 | `region` | `null` | 显式矩形 `{x,y,width,height}`，优先级最高。 |
 | `prefix` | `译：` | 气泡里的译文前缀。 |
 | `system` | 见代码 | 翻译提示词。 |
+| `speak` | `true` | 完整译文出来后是否念出来；流式半截永远不念。 |
+| `voiceSurface` | `desktop` | 念给哪一端：`desktop` / `web`，必须与宠物 `display` 一致。 |
+| `breeze.voiceId` | `voc_puvq4zh92bvs` | Breeze 音色 id（`voc_` 开头）。 |
+| `breeze.voiceName` | `灵动顽皮幼女` | 语音下拉里的显示名。 |
 
 **抓取范围优先级**：`region` > `windowClass` > `window` > 整屏。找不到窗口时回退整屏，并在日志里留一条
 `窗口「X」没找到（window-not-found），已改用整屏`，同一原因只报一次，不刷屏。
@@ -208,6 +212,15 @@ dsh plugin --profile desktop add file:D:/deepseek/projects/dsh-pet-screen-transl
 
 > 配置文件请存成 **UTF-8 无 BOM**：PowerShell 的 `Set-Content -Encoding UTF8` 会写 BOM，
 > `JSON.parse` 遇到 BOM 会直接抛错、整份配置退回默认值（这个坑真实踩过）。代码里已做去 BOM 兜底。
+
+## 语音：Breeze 只念终稿
+
+- 翻译流式时只更新气泡，**不出声**；等完整译文返回后，才让桌宠用 BreezeBlue 音色念一次。
+- 音色由翻译插件注册进 dsh-pet：`breeze/voc_puvq4zh92bvs`（Breeze 音色“灵动顽皮幼女”，标签“大肥鱼”）。
+- Key 放 `breeze-key.txt`（已 gitignore）或环境变量 `BREEZE_API_KEY`；`config.json` 的 `breeze.apiKey` 也可，但不建议提交。
+- 桌宠配置里 `voiceName` 指向该音色；`voiceEnabled` 保持 `false` 时只有翻译终稿会念，桌宠自己的聊天/碎碎念不花钱。想让聊天也念再开 `voiceEnabled`。
+- `speak` 关掉就只弹气泡；`voiceSurface` 必须与宠物 `display` 一致（当前 `desktop`）。
+- 每次合成都消耗 Breeze credits（汉字 2 units/字，10 units = 1 credit）；同一句有 dsh-pet 缓存，重复不重复扣。
 
 ## 已知限制
 

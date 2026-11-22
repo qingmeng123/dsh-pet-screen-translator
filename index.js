@@ -1,4 +1,4 @@
-﻿/**
+/**
  * dsh-pet-screen-translator —— 给 dsh-pet 加一只“会翻译的眼睛”。
  *
  * 形态：一个独立的 DSH 宿主插件，和 dsh-pet 同进程运行，只通过 dsh-pet 的公开 HTTP 接口交互
@@ -18,12 +18,13 @@ import { readFileSync } from 'node:fs';
 import { access, appendFile, mkdir, readFile, realpath, rename, stat, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { installBreezeVoice } from './breeze-voice.js';
 
 /** 插件行 id（与 cordis.patch.yml 一致）。 */
 export const name = 'screen-translator';
 
-/** 需要注入的宿主服务：webServer 取端口，agentDefaultModel + llm 用来翻译。 */
-export const inject = ['webServer', 'agentDefaultModel', 'llm', 'credentials'];
+/** 需要注入的宿主服务：webServer 取端口，agentDefaultModel + llm 用来翻译，petApi7340 注册 Breeze 音色。 */
+export const inject = ['webServer', 'agentDefaultModel', 'llm', 'credentials', 'petApi7340'];
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 
@@ -331,6 +332,8 @@ function readEngine() {
  * @param {any} ctx - DSH 宿主上下文。
  */
 export function apply(ctx) {
+  // Breeze 音色：与引擎无关，先挂上；翻译引擎只在完整译文出来后带 speak 广播。
+  installBreezeVoice(ctx);
   // 引擎选择：config.json 的 engine = "go" 时交给 go-engine.js（只负责起停 translatord.exe）；
   // 其余情况走下面这套 JS 实现（legacy，保留作回退）。
   if (readEngine() === 'go') {
