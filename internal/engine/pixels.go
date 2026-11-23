@@ -112,3 +112,21 @@ func sameScreen(a, b []byte) bool {
 	}
 	return float64(changedTotal)/float64(len(a)) < totalRatio
 }
+
+// blackRatio 返回指纹里"接近全黑"的格子占比。
+//
+// 用途：独占全屏（DirectX flip）下 GDI 抓到的是黑图，OCR 什么也读不到，
+// 表现成"运行中但永远不翻译"。这里提前识别，给出明确提示而不是静默失败。
+func blackRatio(sig []byte) float64 {
+	if len(sig) == 0 {
+		return 0
+	}
+	const dark = 6 // 亮度阈值（0～255）
+	black := 0
+	for _, v := range sig {
+		if v <= dark {
+			black++
+		}
+	}
+	return float64(black) / float64(len(sig))
+}

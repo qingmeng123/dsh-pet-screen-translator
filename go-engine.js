@@ -43,7 +43,13 @@ function labelFor(state) {
         ? '游戏窗口未找到'
         : state.endsWith('window-minimized')
           ? '游戏已最小化'
-        : '游戏不在前台';
+          : state.endsWith('black-frame')
+            ? '独占全屏抓不到'
+            : state.endsWith('no-target')
+              ? '等待游戏窗口'
+              : state.endsWith('target-too-small')
+                ? '窗口太小'
+                : '游戏不在前台';
     return `${PREFIX} ▸ 开关：${why}`;
   }
   const suffix = {

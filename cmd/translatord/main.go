@@ -1,4 +1,4 @@
-// translatord 是 dsh-pet 屏幕翻译的 Go 守护进程。
+﻿// translatord 是 dsh-pet 屏幕翻译的 Go 守护进程。
 //
 // 用法：
 //
@@ -199,10 +199,15 @@ func cmdRun(args []string) int {
 	eng := &engine.Engine{
 		Cfg: cfg,
 		Cap: &capture.Shooter{
-			Class:                  cfg.WindowClass,
-			Title:                  cfg.WindowTitle,
-			Quality:                85,
+			Class:           cfg.WindowClass,
+			Title:           cfg.WindowTitle,
+			Auto:            cfg.TargetMode == "auto",
+			MinScreenPercent: cfg.MinScreenPercent,
+			Quality:         85,
+			// 桌宠浮窗不算遮挡（它弹气泡时会抢前台）
 			IgnoreForegroundTitles: []string{"dsh-pet"},
+			// 自动模式下这些窗口永远不当目标：DSH 本体、桌宠、桌面壳
+			IgnoreTargets: []string{"DeepSeek Harness", "dsh-pet", "dsh-pet-screen-translator"},
 		},
 		OCR: ocrProvider,
 		Tr:  trAdapter{c: tr, cfg: cfg},
@@ -228,8 +233,8 @@ func cmdRun(args []string) int {
 	defer control.Close()
 
 	// 启动时把关键参数打出来，方便确认"跑的是不是最新配置"
-	logger.Info("参数：settle=%dms interval=%dms pixelRatio=%.3f dedupe=%.2f region=[%.2f,%.2f,%.2f,%.2f] stream=%v speak=%v surface=%s reasoning=%s model=%s",
-		cfg.SettleMs, cfg.IntervalMs, cfg.PixelChangeRatio, cfg.DedupeSimilarity,
+	logger.Info("参数：target=%s settle=%dms interval=%dms pixelRatio=%.3f dedupe=%.2f region=[%.2f,%.2f,%.2f,%.2f] stream=%v speak=%v surface=%s reasoning=%s model=%s",
+		cfg.TargetMode, cfg.SettleMs, cfg.IntervalMs, cfg.PixelChangeRatio, cfg.DedupeSimilarity,
 		cfg.FingerprintRegion.X0, cfg.FingerprintRegion.Y0, cfg.FingerprintRegion.X1, cfg.FingerprintRegion.Y1,
 		cfg.Stream, cfg.Speak, cfg.VoiceSurface, cfg.ReasoningEffort, cfg.Model)
 	logger.Info("translatord 启动：mode=%s windowClass=%s window=%s port=%d control=%d",

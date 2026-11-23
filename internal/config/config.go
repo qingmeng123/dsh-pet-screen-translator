@@ -59,6 +59,10 @@ type Config struct {
 	DedupeSimilarity float64 `json:"dedupeSimilarity"`
 	// IdleExtendMs 是「长时间没有新译文」时给气泡续的时长（默认 10000 = +10 秒）。
 	IdleExtendMs int `json:"idleExtendMs"`
+	// TargetMode：fixed = 按 WindowClass/Window 找窗口；auto = 跟随前台窗口（换游戏不用改配置）。
+	TargetMode string `json:"targetMode"`
+	// MinScreenPercent 是自动模式的最低占屏比例（0.25 = 25%），太小不当游戏窗口。
+	MinScreenPercent float64 `json:"minScreenPercent"`
 	// OCRWorker 为 true 时用常驻 OCR 进程（只启动一次 PowerShell），显著降低单次识别延迟。
 	OCRWorker bool `json:"ocrWorker"`
 	// RegionMode：fixed = 用 FingerprintRegion 固定矩形；auto = 在线学习文字区（实验）。
@@ -98,6 +102,8 @@ func Default() Config {
 		DedupeSimilarity:   0.9,
 		SuppressSeconds:    15,
 		IdleExtendMs:       10000,
+		TargetMode:         "auto",
+		MinScreenPercent:   0.25,
 		OCRWorker:          true,
 		RegionMode:         "fixed",
 		// 默认只看窗口下方 45%：绝大多数 RPG 对话框都在这一带
@@ -183,6 +189,9 @@ func (c *Config) normalize() {
 	}
 	if c.PetBasePath == "" {
 		c.PetBasePath = d.PetBasePath
+	}
+	if c.MinScreenPercent <= 0 || c.MinScreenPercent > 1 {
+		c.MinScreenPercent = d.MinScreenPercent
 	}
 	if c.DedupeSimilarity <= 0 || c.DedupeSimilarity > 1 {
 		c.DedupeSimilarity = d.DedupeSimilarity

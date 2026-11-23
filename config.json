@@ -8,8 +8,8 @@
   "lang": "en-GB",
   "prefix": "译：",
   "region": null,
-  "window": "DELTARUNE",
-  "windowClass": "YYGameMakerYY",
+  "window": "",
+  "windowClass": "Watch_Dogs",
   "translateMode": "vision",
   "settleMs": 100,
   "engine": "go",
@@ -32,5 +32,7 @@
     "y1": 1
   },
   "ocrWorker": true,
-  "idleExtendMs": 10000
+  "idleExtendMs": 10000,
+  "targetMode": "auto",
+  "minScreenPercent": 0.25
 }

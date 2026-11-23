@@ -19,6 +19,7 @@
 | **流式输出** | SSE 逐字回填气泡，首字约 0.5 s |
 | **打字机友好** | 用 64×48 像素指纹判稳，文案还在跳时不翻，避免把半句话拿去翻译 |
 | **不重复翻** | 三层去重：像素同屏跳过 → OCR 文本相似度 ≥0.9 跳过 → 译文重复后 15 s 抑制 |
+| **自动跟窗口** | `targetMode: auto` 抓当前前台窗口，换游戏不用改配置；DSH/桌宠/小窗口自动忽略 |
 | **不瞎翻** | 窗口被遮挡 / 不在前台 / 已最小化时明确跳过，并在菜单里说明原因 |
 | **气泡续期** | 12 秒没有新内容，自动把气泡续到 22 秒，长台词不会自己消失 |
 | **省资源** | 常驻 OCR 进程（单次 24 ms）、静态画面只算指纹、思考 token 全关 |
@@ -103,7 +104,9 @@ $env:DSH_PET_ST_WORKSPACE = "E:\games\dsh-workspace"
 
 ### 6. 启动
 
-打开游戏窗口 → 右键桌宠 → **更多 → 屏幕翻译 → 开关**。
+打开游戏窗口（让它保持在前台）→ 右键桌宠 → **更多 → 屏幕翻译 → 开关**。
+
+默认是 `targetMode: auto`：**你切到哪个窗口就翻哪个**，不用为每个游戏改配置。
 
 菜单文字会随状态变化：
 
@@ -139,8 +142,10 @@ $env:DSH_PET_ST_WORKSPACE = "E:\games\dsh-workspace"
   "engine": "go",
   "translateMode": "vision",
 
-  "windowClass": "YYGameMakerYY",
-  "window": "DELTARUNE",
+  "targetMode": "auto",
+  "windowClass": "Watch_Dogs",
+  "window": "",
+  "minScreenPercent": 0.25,
 
   "settleMs": 100,
   "pixelChangeRatio": 0.005,
@@ -162,11 +167,37 @@ $env:DSH_PET_ST_WORKSPACE = "E:\games\dsh-workspace"
 }
 ```
 
+### 目标窗口：自动 / 固定
+
+| `targetMode` | 行为 | 适合 |
+| --- | --- | --- |
+| **`auto`（默认）** | 抓**当前前台窗口**；DSH、桌宠、桌面/任务栏这些永不当作目标；占屏小于 `minScreenPercent`（默认 25%）的小窗口也忽略 | 换游戏不用改配置，切到哪个游戏就翻哪个 |
+| `fixed` | 按 `windowClass` / `window` 找窗口，只有它在前台时才翻 | 只想翻某一个游戏，或 `auto` 抓到不想翻的窗口时 |
+
+`auto` 模式下：
+
+- 焦点切到游戏 → 自动开始翻译
+- 焦点切回 DSH 聊天 → 菜单显示「等待游戏窗口」，不抓屏、不花钱
+- 切到浏览器/记事本也会被当成目标（它们既不在忽略名单、也不小）——介意的话把 `targetMode` 改成 `fixed`
+
+`fixed` 模式用类名匹配，`window` 可以留空：
+
+```json
+"targetMode": "fixed",
+"windowClass": "YYGameMakerYY",
+"window": ""
+```
+
+常见类名：GameMaker 系游戏 `YYGameMakerYY`、Unity 游戏 `UnityWndClass`、看门狗 `Watch_Dogs`。
+不知道类名可以让我查，或者用 PowerShell 枚举窗口类名。
+
 ### 常用项
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
-| `windowClass` / `window` | `YYGameMakerYY` / `DELTARUNE` | 目标窗口，类名优先、支持片段匹配。**换游戏改这里** |
+| `targetMode` | `auto` | `auto` 跟随前台窗口；`fixed` 按类名/标题找 |
+| `windowClass` / `window` | `Watch_Dogs` / 空 | 仅 `fixed` 模式使用，类名优先、支持片段匹配 |
+| `minScreenPercent` | 0.25 | `auto` 模式的最小占屏比例，太小的窗口不当游戏 |
 | `settleMs` | 100 | 判稳窗口（周期语义：扣掉本拍耗时后补足） |
 | `pixelChangeRatio` | 0.005 | 指纹里多少比例像素变化算「画面变了」；太小会被动画误触发，太大漏翻 |
 | `fingerprintRegion` | 下方 90% | 只对这块区域做指纹。对话在顶部就改 `y0/y1` |
@@ -244,6 +275,8 @@ internal/logx          单行日志 + 轮转
 | --- | --- |
 | 菜单显示「画面被遮挡」 | 游戏被其他窗口盖住，或桌宠自己的浮窗抢了前台（已豁免）；切回游戏即可 |
 | 菜单显示「游戏已最小化」 | 从任务栏恢复游戏窗口 |
+| 菜单显示「等待游戏窗口」 | `auto` 模式下没找到合适窗口：游戏没在前台，或占屏太小（<25%），或当前是 DSH/桌宠 |
+| 菜单显示「独占全屏抓不到」 | 抓到的画面几乎全黑，把游戏改成窗口化/无边框全屏 |
 | 一直「识别中」 | 画面一直有动画（角色/粒子），或 `pixelChangeRatio` 太小；把 `fingerprintRegion` 收窄到对话框 |
 | 同一句翻两次 | `dedupeSimilarity` 调低（0.9 → 0.85），或减少 `fingerprintRegion` 里的动画区域 |
 | 文案变了却不翻 | `pixelChangeRatio` 太大（单行变化可能只有 1% 左右），0.005 比较稳 |
@@ -305,7 +338,8 @@ dsh plugin --profile desktop remove dsh-pet-screen-translator
 
 ## 已知限制
 
-- 只支持**一个**目标窗口（`windowClass`），不做多窗口同时翻译。
+- `auto` 模式同一时刻只跟一个窗口（前台那个）；需要对特定窗口锁定时用 `fixed`。
+- `auto` 模式下切到浏览器/编辑器也会被当作目标（它们不在忽略名单里）。
 - 游戏被完全遮挡时无法翻译：GDI 只能抓屏幕像素，DirectX 窗口（如 DELTARUNE）连 `PrintWindow` 都只给黑图。
 - 需要网络访问 `api.deepseek.com`；国内网络需要代理。
 - 只做英译中，OCR 语言在 `ocr-server.ps1` 的 `-Lang` 里可改（默认 `en-GB`）。

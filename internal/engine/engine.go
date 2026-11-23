@@ -179,6 +179,16 @@ func (e *Engine) Step(ctx context.Context) (time.Duration, error) {
 		return interval, nil
 	}
 
+	// 整屏几乎全黑：多半是独占全屏（DirectX）抓不到内容，明确提示而不是静默
+	if blackRatio(sig) >= 0.98 {
+		if e.lastSkip != "black-frame" {
+			e.lastSkip = "black-frame"
+			e.logf("抓到的画面几乎全黑：独占全屏时 GDI 抓不到游戏内容，请改成窗口化/无边框全屏")
+		}
+		e.setState(StateBlocked + "black-frame")
+		return interval, nil
+	}
+
 	// 这一帧已经翻过了（画面没再明显变化）→ 什么都不做
 	if len(e.lastTranslatedSig) > 0 && sameScreen(sig, e.lastTranslatedSig) {
 		e.idle(ctx)

@@ -593,3 +593,27 @@ func TestBubbleKeepAliveExtends(t *testing.T) {
 		t.Fatalf("续期时长应为 12s+10s=22s，got %v", got)
 	}
 }
+
+// 整屏全黑（独占全屏抓不到内容）时应跳过，不跑 OCR、不调模型。
+func TestBlackFrameSkipped(t *testing.T) {
+	clk := &clock{t: time.Unix(1_700_000_000, 0)}
+	black := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	for i := 0; i < len(black.Pix); i += 4 {
+		black.Pix[i], black.Pix[i+1], black.Pix[i+2], black.Pix[i+3] = 0, 0, 0, 255
+	}
+	cap := &fakeCapturer{shots: []Shot{{Image: black, JPEG: []byte{9}, W: 64, H: 64, Source: "window"}}}
+	ocr := &fakeOCR{byFirstByte: map[byte]string{}}
+	tr := &fakeTranslator{visionText: "不该出现"}
+	pet := &fakePet{}
+	e := newEngine(cap, ocr, tr, pet, clk)
+
+	if _, err := e.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if ocr.calls != 0 || tr.visionCalls != 0 {
+		t.Fatalf("全黑帧不该 OCR/翻译，ocr=%d vision=%d", ocr.calls, tr.visionCalls)
+	}
+	if got := e.State(); got != StateBlocked+"black-frame" {
+		t.Fatalf("状态应为 blocked-black-frame，got %q", got)
+	}
+}
